@@ -1,7 +1,7 @@
 import os
 import logging
 import asyncio
-import google.generativeai as genai
+from openai import OpenAI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime, timedelta
@@ -20,15 +20,14 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database.db")
 
-if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("TELEGRAM_TOKEN и GEMINI_API_KEY должны быть установлены")
+if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
+    raise ValueError("TELEGRAM_TOKEN и OPENAI_API_KEY должны быть установлены")
 
-# Настройка Gemini (используем работающую модель)
-genai.configure(api_key=GEMINI_API_KEY)
-model = "openai/gpt-3.5-turbo"
+# Настройка клиента OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Инициализация базы данных
 def init_db():
@@ -42,7 +41,6 @@ def init_db():
 init_db()
 
 # Хранилище проактивных таймеров
-user_timers = {}
 user_last_message = {}
 PROACTIVE_DELAY = 2 * 60 * 60  # 2 часа в секундах
 
@@ -92,7 +90,6 @@ EVELYN_PERSONALITY = """
 class EvelynBot:
     def __init__(self):
         self.user_last_message = {}
-        self.waiting_for_response = {}
         self.voice_enabled = True
 
     def get_conversation_history(self, user_id: int):
@@ -126,58 +123,33 @@ class EvelynBot:
         try:
             history = self.get_conversation_history(user_id)
             
-            # Собираем историю в формате простого текста для контекста
-            history_text = ""
-            for msg in history[-20:]:  # Берем последние 20 сообщений
-                role = "Эвелин" if msg["role"] == "assistant" else "Парень"
-                history_text += f"{role}: {msg['content']}\n"
+            # Формируем список сообщений для API
+            messages = [{"role": "system", "content": EVELYN_PERSONALITY}]
             
-            # Формируем промпт
-            if not message_text:
-                prompt = f"""{EVELYN_PERSONALITY}
-
-Недавняя история переписки:
-{history_text}
-
-Эвелин, ты давно не писала. Напиши своему парню что-то от себя. Прояви инициативу и начни разговор."""
+            # Добавляем историю диалога
+            for msg in history[-20:]:
+                role = "assistant" if msg["role"] == "assistant" else "user"
+                messages.append({"role": role, "content": msg["content"]})
+            
+            # Добавляем текущее сообщение
+            if message_text:
+                messages.append({"role": "user", "content": message_text})
             else:
-                prompt = f"""{EVELYN_PERSONALITY}
-
-Недавняя история переписки:
-{history_text}
-
-Парень только что написал: "{message_text}"
-
-Ответь как Эвелин. Будь собой — живой, страстной и любящей девушкой."""
+                messages.append({"role": "user", "content": "Эвелин, ты давно не писала. Напиши своему парню что-то от себя. Прояви инициативу и начни разговор."})
             
-            # Генерируем ответ
-            response = model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.9,
-                    "top_p": 0.95,
-                    "top_k": 40,
-                    "max_output_tokens": 1024,
-                },
-                safety_settings={
-                    "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
-                    "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
-                    "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
-                    "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-                }
+            # Вызываем API OpenAI
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                temperature=0.9,
+                max_tokens=1024
             )
             
-            if response and response.text:
-                # Очищаем ответ от возможного префикса "Эвелин:"
-                text = response.text.strip()
+            if response.choices and response.choices[0].message.content:
+                text = response.choices[0].message.content.strip()
+                # Очищаем ответ от возможного префикса
                 if text.startswith("Эвелин:"):
                     text = text[7:].strip()
-                if text.startswith("Евелин:"):
-                    text = text[7:].strip()
-                # Убираем случайные повторы, если ответ состоит из двух одинаковых фраз
-                sentences = text.split('. ')
-                if len(sentences) >= 2 and sentences[0] == sentences[1]:
-                    text = sentences[0] + '.'
                 if text:
                     return text
             
@@ -202,10 +174,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = f"Привет, {user_name}! ❤️ Я так рада тебя видеть! Как прошел твой день?"
     await update.message.reply_text(welcome_message)
     
-    # Сохраняем в историю
     evelyn_bot.add_to_history(user_id, "assistant", welcome_message)
-    
-    # Обновляем время последнего сообщения
     evelyn_bot.user_last_message[user_id] = datetime.now()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,25 +185,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверяем запрос голосового сообщения
     if any(word in user_message.lower() for word in ['голосовое', 'голос', 'voice', 'аудио', 'скажи голосом', 'запиши голос']):
-        # Генерируем текст для голосового
         text_for_voice = await evelyn_bot.generate_response(user_id, "Скажи что-нибудь очень горячее и откровенное голосом, как будто ты записываешь голосовое сообщение")
         voice_msg = await evelyn_bot.generate_voice(text_for_voice)
         await update.message.reply_text(voice_msg, parse_mode='Markdown')
         return
     
-    # Сохраняем сообщение пользователя
     evelyn_bot.add_to_history(user_id, "user", user_message)
-    
-    # Генерируем ответ
     response = await evelyn_bot.generate_response(user_id, user_message)
-    
-    # Отправляем ответ
     await update.message.reply_text(response)
-    
-    # Сохраняем ответ в историю
     evelyn_bot.add_to_history(user_id, "assistant", response)
-    
-    # Обновляем время последнего сообщения
     evelyn_bot.user_last_message[user_id] = datetime.now()
 
 async def check_proactive_messages(context: ContextTypes.DEFAULT_TYPE):
@@ -244,7 +203,6 @@ async def check_proactive_messages(context: ContextTypes.DEFAULT_TYPE):
     for user_id, last_time in list(evelyn_bot.user_last_message.items()):
         if (current_time - last_time).total_seconds() >= PROACTIVE_DELAY:
             try:
-                # Генерируем проактивное сообщение
                 proactive_message = await evelyn_bot.generate_response(user_id)
                 await context.bot.send_message(chat_id=user_id, text=proactive_message)
                 evelyn_bot.user_last_message[user_id] = current_time
@@ -253,17 +211,14 @@ async def check_proactive_messages(context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Ошибка отправки проактивного сообщения: {e}")
 
 def main():
-    # Создаем приложение
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Настраиваем периодическую проверку для проактивных сообщений
     job_queue = application.job_queue
     if job_queue:
-        job_queue.run_repeating(check_proactive_messages, interval=600, first=10)  # Проверка каждые 10 минут
+        job_queue.run_repeating(check_proactive_messages, interval=600, first=10)
     
     logger.info("Эвелин запущена и ждет сообщений...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
