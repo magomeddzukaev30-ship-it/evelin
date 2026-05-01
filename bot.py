@@ -124,26 +124,33 @@ class EvelynBot:
         try:
             history = self.get_conversation_history(user_id)
             
-            # Формируем контекст для Gemini
-            messages = [
-                {"role": "user", "parts": [EVELYN_PERSONALITY]},
-                {"role": "model", "parts": ["Я поняла, кто я. Я — Эвелин, и я буду общаться как настоящая девушка."]}
-            ]
+            # Собираем историю в формате простого текста для контекста
+            history_text = ""
+            for msg in history[-20:]:  # Берем последние 20 сообщений
+                role = "Эвелин" if msg["role"] == "assistant" else "Парень"
+                history_text += f"{role}: {msg['content']}\n"
             
-            # Добавляем историю диалога
-            for msg in history:
-                role = "model" if msg["role"] == "assistant" else "user"
-                messages.append({"role": role, "parts": [msg["content"]]})
-            
-            # Если нет нового сообщения — запрашиваем проактивное
+            # Формируем промпт
             if not message_text:
-                messages.append({"role": "user", "parts": ["Эвелин, ты давно не писала. Что ты сейчас чувствуешь и хочешь сказать своему парню?"]})
+                prompt = f"""{EVELYN_PERSONALITY}
+
+Недавняя история переписки:
+{history_text}
+
+Эвелин, ты давно не писала. Напиши своему парню что-то от себя. Прояви инициативу и начни разговор."""
             else:
-                messages.append({"role": "user", "parts": [message_text]})
+                prompt = f"""{EVELYN_PERSONALITY}
+
+Недавняя история переписки:
+{history_text}
+
+Парень только что написал: "{message_text}"
+
+Ответь как Эвелин. Будь собой — живой, страстной и любящей девушкой."""
             
             # Генерируем ответ
             response = model.generate_content(
-                messages,
+                prompt,
                 generation_config={
                     "temperature": 0.9,
                     "top_p": 0.95,
@@ -159,16 +166,27 @@ class EvelynBot:
             )
             
             if response and response.text:
-                return response.text
+                # Очищаем ответ от возможного префикса "Эвелин:"
+                text = response.text.strip()
+                if text.startswith("Эвелин:"):
+                    text = text[7:].strip()
+                if text.startswith("Евелин:"):
+                    text = text[7:].strip()
+                # Убираем случайные повторы, если ответ состоит из двух одинаковых фраз
+                sentences = text.split('. ')
+                if len(sentences) >= 2 and sentences[0] == sentences[1]:
+                    text = sentences[0] + '.'
+                if text:
+                    return text
+            
             return "Прости, я немного отвлеклась... О чем мы говорили? 🥰"
             
         except Exception as e:
             logger.error(f"Error generating response: {e}")
-            return "Что-то я запуталась в своих чувствах... Давай попробуем еще раз? 💕"
+            return "Что-то я задумалась о тебе и потеряла нить разговора... Скажи еще раз? 💕"
 
     async def generate_voice(self, text: str) -> Path:
         """Имитация голосового сообщения через текстовое описание"""
-        # В реальном проекте здесь был бы код для TTS
         voice_note = f"🎤 *ГОЛОСОВОЕ СООБЩЕНИЕ ОТ ЭВЕЛИН:*\n\n_{text}_"
         return voice_note
 
@@ -250,4 +268,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    # force update v2
