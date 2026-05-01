@@ -28,7 +28,7 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 
 # Настройка Gemini (используем работающую модель)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = "openai/gpt-3.5-turbo"
 
 # Инициализация базы данных
 def init_db():
