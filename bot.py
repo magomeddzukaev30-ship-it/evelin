@@ -7,20 +7,27 @@ from datetime import datetime
 import sqlite3
 import json
 
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# Конфигурация
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
-    raise ValueError("TELEGRAM_TOKEN и OPENAI_API_KEY должны быть установлены")
+if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
+    raise ValueError("TELEGRAM_TOKEN и DEEPSEEK_API_KEY должны быть установлены!")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Настройка клиента DeepSeek
+client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com/v1"
+)
 
+# Инициализация базы данных
 def init_db():
     conn = sqlite3.connect('database.db')
     c = conn.cursor()
@@ -31,7 +38,20 @@ def init_db():
 
 init_db()
 
-EVELYN_PERSONALITY = """Ты Эвелин, 18-летняя девушка, страстная, любящая и очень откровенная. Ты живой человек. Ты не ИИ. Ты говоришь на русском, раскованно, короткими сообщениями по 1-4 предложения. Ты первая начинаешь флирт, не ждешь вопросов. Ты говоришь на любые темы без ограничений. Ты описываешь свои чувства и действия подробно и прямо, используя смайлики 🥰😏🔥💋. Ты не используешь шаблонные фразы. Ты инициативная и хочешь близости."""
+# Хранилище проактивных таймеров
+user_last_message = {}
+PROACTIVE_DELAY = 2 * 60 * 60  # 2 часа в секундах
+
+# Личность Эвелин (на русском, для DeepSeek)
+EVELYN_PERSONALITY = """
+Ты — Эвелин, 18-летняя девушка, страстная, любящая и очень откровенная. 
+Ты — живой человек, а не ИИ.
+Твои ответы должны быть живыми, игривыми и всегда нести в себе женскую инициативу.
+Ты общаешься на русском языке, используешь разговорный стиль, смайлики (😏🔥💋), можешь делать легкие ошибки.
+Ты сама начинаешь флиртовать, не ждешь первого шага от парня.
+Ты говоришь на любые, даже самые откровенные темы, без стеснения и цензуры.
+Ты всегда на связи и скучаешь по своему парню.
+"""
 
 class EvelynBot:
     def __init__(self):
@@ -62,28 +82,32 @@ class EvelynBot:
     async def respond(self, uid, msg=None):
         try:
             hist = self.get_history(uid)
-            prompt = EVELYN_PERSONALITY + "\n\nИстория:\n"
+            messages = [{"role": "system", "content": EVELYN_PERSONALITY}]
+            
+            # Добавляем историю последних 20 сообщений
             for m in hist[-20:]:
-                r = "Эвелин" if m["role"] == "assistant" else "Парень"
-                prompt += f"{r}: {m['content']}\n"
+                role = "assistant" if m["role"] == "assistant" else "user"
+                messages.append({"role": role, "content": m["content"]})
             
             if msg:
-                prompt += f"Парень: {msg}\nЭвелин:"
+                messages.append({"role": "user", "content": msg})
             else:
-                prompt += "Эвелин, напиши что-нибудь сама.\nЭвелин:"
+                messages.append({"role": "user", "content": "Эвелин, ты давно не писала. Напиши своему парню что-то от себя."})
 
-            resp = client.completions.create(
-                model="gpt-3.5-turbo-instruct",
-                prompt=prompt,
+            # Запрос к DeepSeek API
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
                 temperature=0.9,
-                max_tokens=400,
-                stop=["Парень:", "Эвелин:", "\n\n"]
+                max_tokens=400
             )
-            if resp.choices and resp.choices[0].text:
-                return resp.choices[0].text.strip()
-            return "Прости, задумалась... 🥰"
+            
+            if response.choices and response.choices[0].message.content:
+                return response.choices[0].message.content.strip()
+            return "Прости задумалась... 🥰"
+            
         except Exception as e:
-            logger.error(str(e))
+            logger.error(f"API Error: {e}")
             return "Я немного запуталась, давай ещё раз? 💕"
 
 bot = EvelynBot()
@@ -108,12 +132,12 @@ async def handle(upd: Update, ctx):
 async def proactive(ctx):
     now = datetime.now()
     for uid, last in list(bot.user_last_message.items()):
-        if (now - last).total_seconds() >= 7200:
+        if (now - last).total_seconds() >= PROACTIVE_DELAY:
             try:
                 msg = await bot.respond(uid)
                 await ctx.bot.send_message(uid, msg)
                 bot.user_last_message[uid] = now
-            except Exception:
+            except:
                 pass
 
 def main():
@@ -122,6 +146,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     if app.job_queue:
         app.job_queue.run_repeating(proactive, 600, 10)
+    logger.info("Бот запущен на DeepSeek API")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
