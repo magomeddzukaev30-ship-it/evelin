@@ -26,9 +26,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database.db")
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     raise ValueError("TELEGRAM_TOKEN и GEMINI_API_KEY должны быть установлены")
 
-# Настройка Gemini
+# Настройка Gemini (используем проверенную модель)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel('gemini-pro')
 
 # Инициализация базы данных
 def init_db():
